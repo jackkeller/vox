@@ -7,8 +7,8 @@ Vox — Latin for *voice*. Say a wake word, speak your prompt, Claude types it,
 runs it, and answers out loud. 100% native OS speech — no cloud STT, no
 Python, no browser, no extra services.
 
-> **macOS:** spoken replies work today (see [macOS](#macos)). Voice input —
-> wake word, dictation, the hub — is Windows-only for now.
+> **macOS:** single-CLI voice input and spoken replies work (see
+> [macOS](#macos)). The multi-CLI hub is Windows-only for now.
 
 ## Install
 
@@ -24,7 +24,7 @@ run:
 Pulls straight from GitHub, no clone. **Restart Claude Code** so the hooks
 load.
 
-First run on Windows, once (macOS needs no setup):
+First run on Windows, once (macOS: see [macOS](#macos)):
 1. `/vox:check` — verify the WinRT speech engine.
 2. Turn ON **Settings → Privacy & security → Speech → Online speech
    recognition** (Windows requires this for dictation, even on-device).
@@ -43,24 +43,37 @@ Or: `claude --plugin-dir <path>\vox`
 
 ## macOS
 
-Spoken replies use the built-in `say` — no install, no permissions. Needs
-macOS 15 or later (for the bundled `jq`).
+Needs macOS 15 or later. Voice input also needs the Xcode Command Line Tools
+(`xcode-select --install`) — Vox compiles a small listener app on first use.
+
+First run, once:
+1. `/vox:check` — builds the listener and asks for **Microphone** and
+   **Speech Recognition** access for *Vox Listener*. Click Allow on both.
+   If it reports no on-device model, turn on **System Settings → Keyboard →
+   Dictation** and let your language download.
+
+Then, in the terminal running Claude Code:
 
 ```
-/vox:speak on           # Claude reads each reply aloud
+/vox:speak on           # Claude reads replies to your voiced prompts aloud
+/vox:listen             # start hands-free — "hey claude", chime, speak, stop
 /vox:hush               # cut a long spoken reply short
-/vox:speak off          # stop reading replies
-/vox:test               # speak a test sentence, list installed voices
-/vox:status             # state + recent log
+/vox:stop               # stop listening + silence speech
 ```
 
-Until voice input lands on macOS, `/vox:speak on` reads **every** reply
-(Windows only reads replies to voiced prompts). Code blocks are skipped and
-markdown is stripped. Pick a voice from `/vox:test` and set it in
-`~/.claude/vox/config.json` (see [Config](#config)).
+**Flow:** say *"hey claude"* → chime → speak → just stop talking. It sends on
+your pause (or say an end word like "send it").
 
-Voice input on macOS is in progress: a native Speech-framework listener that
-types into Ghostty, iTerm2, Terminal.app, or a tmux pane.
+Recognition runs on-device through Apple's Speech framework. Vox types into
+the pane you ran `/vox:listen` from — **Ghostty** (1.3+), **iTerm2**,
+**Terminal.app** or a **tmux** pane — without stealing focus. The first time
+it types into a terminal app, macOS may ask to let *Vox Listener* control it;
+click OK. Other terminals work by bringing the app forward and typing, which
+needs Accessibility access. `/vox:aim` re-targets another terminal (5s grab).
+
+Spoken replies use the built-in `say`. Code blocks are skipped and markdown
+is stripped. Pick a voice from `/vox:test` and set it in
+`~/.claude/vox/config.json` (see [Config](#config)).
 
 ---
 
@@ -115,7 +128,7 @@ talking. It sends on your pause. No end-word needed.
 
 ## All commands
 
-On macOS only speak, hush, stop, status, test and list work so far.
+On macOS everything except `/vox:hub` and `/vox:name` works so far.
 
 ```
 /vox:hub start|stop|status   # multi-CLI tray hub
@@ -127,7 +140,7 @@ On macOS only speak, hush, stop, status, test and list work so far.
 /vox:duplex full|half        # headphones (barge-in) | speakers (default)
 /vox:aim                     # re-aim voice at another window (5s grab)
 /vox:status                  # state + recent log
-/vox:check                   # verify the WinRT speech engine
+/vox:check                   # verify the speech engine + permissions
 /vox:test                    # speak a test sentence, list voices
 /vox:list                    # this list
 ```
@@ -140,10 +153,11 @@ Windows: `%USERPROFILE%\.claude\windows-voice\config.json` (created on first run
 `winrtContinueSilenceSec`, `winrtEndSilenceSec`, `duplex`, `ttsTailMs`,
 `hubPort`. Logs and state live in that same folder (`voice.log`).
 
-macOS: `~/.claude/vox/config.json` (create it to override defaults). Uses
+macOS: `~/.claude/vox/config.json` (create it to override defaults):
 `voice` (a name from `/vox:test`), `rate` (-10..10, same scale as Windows),
-`volume` (0..100), `maxChars` and `speakCodeBlocks`. Logs and state live in
-that same folder.
+`volume`, `maxChars`, `wakeWords`, `endWords`, `duplex`, `ttsTailMs`,
+`silenceGapSec`, `maxCommandSec`, `commandWaitSec`, `speakVoiceOnly`. Logs and
+state live in that same folder.
 
 ## Known limits
 

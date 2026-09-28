@@ -3,12 +3,18 @@
 . "$(dirname "$0")/common.sh"
 
 if vox_speak_enabled; then tts=ON; else tts=OFF; fi
-if vox_pid_alive "$VOX_STATE/speaker.pid"; then speaking=yes; else speaking=no; fi
+if p=$(vox_listener_pid); then listener="RUNNING (pid $p)"; else listener=stopped; fi
+if [ "$(vox_cfg duplex)" = half ]; then how='(deaf while speaking - speakers)'; else how='(always listening - headset)'; fi
+if [ "$(vox_cfg speakVoiceOnly)" = true ]; then which='replies to voiced prompts only'; else which='every reply'; fi
 
-echo "TTS readback : $tts"
-echo "Speaking now : $speaking"
+echo "TTS readback : $tts  ($which)"
+echo "Listener     : $listener"
+echo 'STT engine   : Apple Speech (on-device)'
+echo "Duplex       : $(vox_cfg duplex)  $how"
+echo "Target       : $(vox_describe_target)"
+echo "Wake words   : $(vox_cfg wakeWords | jq -r 'join(" / ")')"
+echo "End words    : $(vox_cfg endWords | jq -r 'join(" / ")')"
 echo "Voice        : $(vox_cfg voice | sed 's/^$/(system default)/'), $(vox_say_wpm) wpm"
-echo 'Voice input  : not available on macOS yet'
 echo "Config file  : $VOX_STATE/config.json"
 echo
 echo '--- last 12 log lines ---'

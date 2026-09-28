@@ -1,5 +1,5 @@
 ---
-description: Re-aim voice input at a window you pick (5s grab)
+description: Re-aim voice input at a terminal you pick (5s grab)
 allowed-tools: Bash(sh:*)
 ---
 

@@ -12,7 +12,17 @@ VOX_DEFAULTS='{
   "rate": 1,
   "volume": 100,
   "maxChars": 100000,
-  "speakCodeBlocks": false
+  "speakCodeBlocks": false,
+  "wakeWords": ["hey claude", "okay claude"],
+  "endWords": ["over", "send it", "go ahead", "that is all", "send"],
+  "duplex": "half",
+  "ttsTailMs": 300,
+  "silenceGapSec": 2.5,
+  "maxCommandSec": 30,
+  "commandWaitSec": 10,
+  "speakVoiceOnly": true,
+  "voiceCmdTtlSec": 0,
+  "voiceCmdRing": 50
 }'
 
 vox_config() {
@@ -80,4 +90,99 @@ vox_volume_prefix() {
     local v
     v=$(vox_cfg volume)
     [ "$v" -lt 100 ] 2>/dev/null && awk -v v="$v" 'BEGIN { printf "[[volm %.2f]] ", v / 100 }'
+}
+
+vox_listener_pid() {
+    vox_pid_alive "$VOX_STATE/listener.pid" && tr -dc '0-9' < "$VOX_STATE/listener.pid"
+}
+
+# --- Voiced-command ring: lets the Stop hook tell a VOICED prompt from a
+#     TYPED one. send.sh appends every command it types; on-stop checks
+#     whether the prompt that triggered a reply came through here.
+#     Same file format as common.ps1 (one {"t":epoch,"x":text} per line). ---
+vox_norm_text() {
+    printf '%s' "$1" | perl -CSD -0777 -pe '$_ = lc; s/\s+/ /g; s/^[.!?,;:"\x27` ]+|[.!?,;:"\x27` ]+$//g'
+}
+
+vox_add_voice_cmd() {
+    local n f="$VOX_STATE/voice-cmds.jsonl"
+    n=$(vox_norm_text "$1")
+    [ -n "$n" ] || return
+    jq -cn --arg x "$n" '{t: now | floor, x: $x}' >> "$f"
+    tail -n "$(vox_cfg voiceCmdRing)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+vox_was_voice_cmd() {
+    local n f="$VOX_STATE/voice-cmds.jsonl"
+    n=$(vox_norm_text "$1")
+    [ -n "$n" ] && [ -f "$f" ] || return 1
+    jq -Rne --arg x "$n" --argjson ttl "$(vox_cfg voiceCmdTtlSec)" '
+        [ inputs | fromjson? | select(.x == $x and ($ttl <= 0 or (now - .t) <= $ttl)) ] | length > 0' "$f" > /dev/null
+}
+
+# Consume one voiced command: drop the FIRST matching entry so its reply is
+# spoken exactly once and the words can't false-match a later typed prompt.
+vox_remove_voice_cmd() {
+    local n f="$VOX_STATE/voice-cmds.jsonl"
+    n=$(vox_norm_text "$1")
+    [ -n "$n" ] && [ -f "$f" ] || return
+    jq -Rnc --arg x "$n" '
+        reduce (inputs | fromjson?) as $o ({done: false, keep: []};
+            if (.done | not) and $o.x == $x then .done = true else .keep += [$o] end)
+        | .keep[]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    [ -s "$f" ] || rm -f "$f"
+}
+
+# --- Target terminal: where send.sh types. Written to target.json as
+#     {kind, id, ...}; kind is tmux | ghostty | iterm | terminal | app. ---
+
+# The terminal this Claude session runs in, from the environment it inherited.
+vox_target_from_env() {
+    if [ -n "$TMUX_PANE" ]; then
+        jq -cn --arg id "$TMUX_PANE" --arg sock "${TMUX%%,*}" --arg bin "$(command -v tmux)" \
+            '{kind: "tmux", id: $id, socket: $sock, bin: $bin}'
+        return
+    fi
+    case "$TERM_PROGRAM" in
+        ghostty)   vox_target_ghostty ;;
+        iTerm.app) jq -cn --arg id "${ITERM_SESSION_ID#*:}" '{kind: "iterm", id: $id}' ;;
+        Apple_Terminal) jq -cn --arg id "$(vox_own_tty)" '{kind: "terminal", id: $id}' ;;
+        *)         jq -cn --arg id "${__CFBundleIdentifier:-}" '{kind: "app", id: $id}' ;;
+    esac
+}
+
+# Whatever terminal is frontmost right now (for /vox:aim).
+vox_target_frontmost() {
+    local bid
+    bid=$(lsappinfo info -only bundleid "$(lsappinfo front)" | sed -E 's/.*="?([^"]*)"?$/\1/')
+    case "$bid" in
+        com.mitchellh.ghostty) vox_target_ghostty ;;
+        com.googlecode.iterm2)
+            jq -cn --arg id "$(osascript -e 'tell application id "com.googlecode.iterm2" to get unique id of current session of current window')" '{kind: "iterm", id: $id}' ;;
+        com.apple.Terminal)
+            jq -cn --arg id "$(osascript -e 'tell application "Terminal" to get tty of selected tab of front window')" '{kind: "terminal", id: $id}' ;;
+        *) jq -cn --arg id "$bid" '{kind: "app", id: $id}' ;;
+    esac
+}
+
+# Ghostty exposes no per-pane environment variable, so use the focused pane:
+# the one the user just typed the slash command into.
+vox_target_ghostty() {
+    jq -cn --arg id "$(osascript -e 'tell application "Ghostty" to get id of focused terminal of selected tab of front window')" \
+        '{kind: "ghostty", id: $id}'
+}
+
+# The controlling tty of this Claude session (the Bash tool itself has none,
+# so walk up the process tree).
+vox_own_tty() {
+    local p=$$ t
+    while [ "${p:-1}" -gt 1 ]; do
+        t=$(ps -o tty= -p "$p" | tr -d ' ')
+        if [ -n "$t" ] && [ "$t" != '??' ]; then echo "/dev/$t"; return; fi
+        p=$(ps -o ppid= -p "$p" | tr -d ' ')
+    done
+}
+
+vox_describe_target() {
+    jq -r '"\(.kind) \(.id)"' "$VOX_STATE/target.json" 2>/dev/null || echo '(none)'
 }

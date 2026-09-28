@@ -27,11 +27,33 @@ if [ -z "$text" ]; then
 fi
 [ -n "$text" ] || exit 0
 
+# Voice-only gate: only speak if the prompt that triggered this reply came in
+# by voice (send.sh recorded it). Typed prompts stay silent. Walk back to the
+# last real user prompt (skip tool_result-only user turns).
+voice_only=$(vox_cfg speakVoiceOnly)
+if [ "$voice_only" = true ]; then
+    transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // empty' 2>/dev/null)
+    user_text=$([ -f "$transcript" ] && jq -Rnr '
+        [ inputs | fromjson? | select(.type == "user" or .message.role == "user")
+          | .message.content
+          | if type == "string" then . else ([ .[]? | select(.type == "text" and .text) | .text ] | join("\n")) end
+          | gsub("^\\s+|\\s+$"; "") | select(length > 0) ] | last // empty' "$transcript")
+    if ! vox_was_voice_cmd "$user_text"; then
+        vox_log 'skip TTS: last prompt was typed, not voiced' on-stop
+        exit 0
+    fi
+fi
+
 # Dedupe: the Stop hook can fire more than once for the same final message.
 hash=$(printf '%s' "$text" | shasum | cut -d' ' -f1)
 hash_file="$VOX_STATE/last-hash.txt"
 [ "$(cat "$hash_file" 2>/dev/null)" = "$hash" ] && exit 0
 printf '%s\n' "$hash" > "$hash_file"
+
+# Committed to speaking now: consume this voiced command so it stays
+# matchable for arbitrarily long tasks but can't false-match a later typed
+# prompt with the same words.
+[ "$voice_only" = true ] && vox_remove_voice_cmd "$user_text"
 
 # --- Clean markdown into something pleasant to hear ---
 text=$(printf '%s' "$text" | VOX_CODE="$(vox_cfg speakCodeBlocks)" VOX_MAX="$(vox_cfg maxChars)" perl -0777 -CSD -pe '
