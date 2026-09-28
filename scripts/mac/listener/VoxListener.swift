@@ -106,6 +106,8 @@ final class Listener {
     private var sending = false
     private var paused = false
     private var followUp = false
+    private var carried = ""
+    private var committedText = ""
     private var replySpeaking = false
     private var resumeAt: Date?
 
@@ -176,6 +178,11 @@ final class Listener {
     // A fresh recognition task. Also clears the transcript, so a wake word
     // heard earlier can't match again.
     func startTask() {
+        // A new task starts with an empty transcript; mid-command, what was
+        // already heard carries over so the command continues.
+        carried = capturing ? command : ""
+        committedText = ""
+        if debug && capturing { log("new task mid-command, carrying '\(carried)'") }
         stopTask()
         generation += 1
         let gen = generation
@@ -233,15 +240,26 @@ final class Listener {
         return out
     }
 
+    // The recognizer capitalizes each utterance; mid-sentence that reads
+    // wrong ("list the files In the folder"). Lowercase an ordinary first
+    // word, leaving "I" and acronyms alone.
+    func continuation(_ s: String) -> String {
+        let chars = Array(s)
+        guard chars.count > 1, chars[0].isUppercase, chars[1].isLowercase else { return s }
+        return chars[0].lowercased() + String(chars.dropFirst())
+    }
+
     func handle(_ result: SFSpeechRecognitionResult) {
         if paused || sending { return }
         let s = result.bestTranscription.formattedString as NSString
-        if debug { log("heard: \(s)") }
+        if (s as String) == committedText { return }
+        if debug { log("heard: \(s) [final=\(result.isFinal) meta=\(result.speechRecognitionMetadata != nil)]") }
         let w = words(s)
-        // In a follow-up window the whole utterance is the command; a wake word
-        // said anyway still marks where it starts.
+        // While capturing (after a wake word in an earlier task, or in a
+        // follow-up window) the whole utterance is command; a wake word said
+        // here still marks where it starts.
         let wake = wakeEnd(w.map { $0.word })
-        if wake == nil && !followUp { return }
+        if wake == nil && !capturing { return }
         let end = wake ?? 0
 
         if !capturing {
@@ -269,9 +287,19 @@ final class Listener {
             let edges = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;:"))
             cmd = s.substring(with: NSRange(location: start, length: stop - start)).trimmingCharacters(in: edges)
         }
+        // A wake word in this utterance starts the command over.
+        let prefix = wake == nil ? carried : ""
+        if !prefix.isEmpty { cmd = cmd.isEmpty ? prefix : prefix + " " + continuation(cmd) }
         if cmd != command {
             command = cmd
             lastChange = Date()
+        }
+        // At a pause the recognizer ends the utterance (metadata arrives) and
+        // the same task starts a fresh transcript for the next one, e.g. after
+        // "hey claude" or a think-pause mid-sentence. Keep what was said so far.
+        if capturing && result.speechRecognitionMetadata != nil {
+            carried = command
+            committedText = s as String
         }
     }
 

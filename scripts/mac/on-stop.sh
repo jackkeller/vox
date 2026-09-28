@@ -29,12 +29,13 @@ fi
 
 # Voice-only gate: only speak if the prompt that triggered this reply came in
 # by voice (send.sh recorded it). Typed prompts stay silent. Walk back to the
-# last real user prompt (skip tool_result-only user turns).
+# last real user prompt (skip tool_result-only turns and isMeta entries such as
+# an expanded skill).
 voice_only=$(vox_cfg speakVoiceOnly)
 if [ "$voice_only" = true ]; then
     transcript=$(printf '%s' "$payload" | jq -r '.transcript_path // empty' 2>/dev/null)
     user_text=$([ -f "$transcript" ] && jq -Rnr '
-        [ inputs | fromjson? | select(.type == "user" or .message.role == "user")
+        [ inputs | fromjson? | select(.type == "user" or .message.role == "user") | select(.isMeta != true)
           | .message.content
           | if type == "string" then . else ([ .[]? | select(.type == "text" and .text) | .text ] | join("\n")) end
           | gsub("^\\s+|\\s+$"; "") | select(length > 0) ] | last // empty' "$transcript")
