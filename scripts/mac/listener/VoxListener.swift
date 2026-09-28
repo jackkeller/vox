@@ -14,6 +14,7 @@
 
 import AppKit
 import AVFoundation
+import CoreAudio
 import Speech
 
 let stateDir = FileManager.default.homeDirectoryForCurrentUser.path + "/.claude/vox"
@@ -83,13 +84,16 @@ final class Listener {
     let cfg = Config.load()
     let sendScript: String
     let recognizer: SFSpeechRecognizer
-    let engine = AVAudioEngine()
+    var engine = AVAudioEngine()
+    private var engineObserver: NSObjectProtocol?
     let wakePhrases: [[String]]
     let endPhrases: [[String]]
 
     // The audio thread appends to whichever request is current.
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var lastAudio = Date()
+    private var usingMic = false
     private var task: SFSpeechRecognitionTask?
     private var generation = 0
     private var taskStarted = Date()
@@ -113,16 +117,55 @@ final class Listener {
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
-        lock.lock(); request?.append(buffer); lock.unlock()
+        lock.lock(); lastAudio = Date(); request?.append(buffer); lock.unlock()
     }
 
     func startMicrophone() throws {
+        usingMic = true
+        // The engine's own change notice can miss a default-input switch;
+        // CoreAudio reports those reliably.
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main) { [weak self] _, _ in
+            self?.restartMicrophone("switched to a new default input")
+        }
+        try startEngine()
+    }
+
+    // AVAudioEngine stops itself when the audio setup changes (a Bluetooth
+    // speaker waking or reconnecting, a virtual device appearing, the default
+    // input switching), and a restarted instance can stay bound to the old
+    // device - so every (re)start builds a fresh engine.
+    private func startEngine() throws {
+        if let o = engineObserver { NotificationCenter.default.removeObserver(o) }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        engine = AVAudioEngine()
+        engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            self?.restartMicrophone("changed (audio device switch)")
+        }
         let input = engine.inputNode
         input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
             self?.append(buffer)
         }
         engine.prepare()
         try engine.start()
+        lock.lock(); lastAudio = Date(); lock.unlock()
+    }
+
+    func restartMicrophone(_ why: String) {
+        log("audio input \(why) - restarting it")
+        do {
+            try startEngine()
+        } catch {
+            // lastAudio stays stale, so the watchdog in tick() retries.
+            log("audio input restart failed: \(error.localizedDescription)")
+            return
+        }
+        capturing = false
+        followUp = false
+        if !paused && !sending { startTask() }
     }
 
     func run() {
@@ -236,6 +279,16 @@ final class Listener {
         if FileManager.default.fileExists(atPath: stateDir + "/stop.flag") {
             log("stop.flag seen - exiting")
             exit(0)
+        }
+
+        // Watchdog: a running engine delivers buffers continuously (silence
+        // included), so a gap means the input died without a notification.
+        if usingMic {
+            lock.lock(); let gap = Date().timeIntervalSince(lastAudio); lock.unlock()
+            if gap >= 3 {
+                restartMicrophone("silent for \(Int(gap))s")
+                return
+            }
         }
 
         // Half duplex: go deaf while Claude speaks so the mic can't hear the

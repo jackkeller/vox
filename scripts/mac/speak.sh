@@ -9,6 +9,14 @@ file=$1
 args=()
 while IFS= read -r a; do args+=("$a"); done < <(vox_say_args)
 
-# exec so speaker.pid (this pid) is the `say` process itself - killing it
-# stops the audio immediately.
-exec say "${args[@]}" -- "$(vox_volume_prefix)$(cat "$file")"
+# speaker.pid is this shell, so pass a kill on to `say` - hushing must stop
+# the audio immediately.
+say "${args[@]}" -- "$(vox_volume_prefix)$(cat "$file")" &
+child=$!
+trap 'kill "$child" 2>/dev/null; exit 0' TERM INT
+wait "$child"
+rc=$?
+# `say` dies mid-sentence if its output device goes away (e.g. a Bluetooth
+# speaker dropping); make that visible instead of a silent cut-off.
+[ $rc -ne 0 ] && vox_log "say exited with status $rc before finishing" speak
+exit 0
