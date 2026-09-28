@@ -1,6 +1,7 @@
 # send.sh - type one voice command into the target terminal and press Enter.
-# Called by VoxListener with the command text as $1. Target comes from
-# target.json (written by start-listener.sh / voice-retarget.sh).
+# Called by VoxListener with the command text as $1, and in hub mode the
+# pane name as $2. The target comes from names.json[$2] (written by
+# voice-name.sh) or else target.json (start-listener.sh / voice-retarget.sh).
 # Runs under VoxListener.app with launchd's minimal PATH, so nothing here may
 # rely on the user's shell PATH (tmux's path is recorded in target.json).
 
@@ -8,14 +9,20 @@
 
 text=$(printf '%s' "$1" | tr '\r\n' '  ')
 [ -n "$text" ] || exit 1
-target="$VOX_STATE/target.json"
-kind=$(jq -r '.kind // empty' "$target" 2>/dev/null)
-id=$(jq -r '.id // empty' "$target" 2>/dev/null)
+name=${2:-}
+if [ -n "$name" ]; then
+    target=$(jq -c --arg n "$name" '.[$n] // empty' "$VOX_STATE/names.json" 2>/dev/null)
+else
+    target=$(cat "$VOX_STATE/target.json" 2>/dev/null)
+fi
+field() { printf '%s' "$target" | jq -r --arg k "$1" '.[$k] // empty' 2>/dev/null; }
+kind=$(field kind)
+id=$(field id)
 
 case "$kind" in
     tmux)
-        bin=$(jq -r '.bin' "$target")
-        sock=$(jq -r '.socket' "$target")
+        bin=$(field bin)
+        sock=$(field socket)
         "$bin" -S "$sock" send-keys -t "$id" -l -- "$text" &&
             "$bin" -S "$sock" send-keys -t "$id" Enter
         ;;
@@ -83,15 +90,19 @@ end run
 EOF
         ;;
     *)
-        vox_log "no target terminal - run /vox:listen or /vox:aim. Dropped: $text" send
+        if [ -n "$name" ]; then
+            vox_log "no pane named '$name' - run /vox:name $name in it. Dropped: $text" send
+        else
+            vox_log "no target terminal - run /vox:listen or /vox:aim. Dropped: $text" send
+        fi
         exit 1
         ;;
 esac
 rc=$?
 
 if [ $rc -eq 0 ]; then
-    vox_add_voice_cmd "$text"
-    vox_log "sent to $kind $id: $text" send
+    vox_add_voice_cmd "$text" "$name"
+    vox_log "sent to ${name:+$name (}$kind $id${name:+)}: $text" send
 else
     vox_log "FAILED to type into $kind $id (exit $rc): $text" send
 fi

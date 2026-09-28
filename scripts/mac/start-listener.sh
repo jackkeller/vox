@@ -3,6 +3,12 @@
 
 . "$(dirname "$0")/common.sh"
 
+# One mic: refuse while the multi-CLI hub runs (it owns the mic).
+if vox_hub_pid > /dev/null; then
+    echo "The Vox Hub is running (it owns the mic). Use /vox:name <name> per CLI, or stop the hub with /vox:hub stop before /vox:listen."
+    exit 0
+fi
+
 if p=$(vox_listener_pid); then
     echo "Listener already running (pid $p). Use /vox:stop first to restart."
     exit 0

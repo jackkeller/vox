@@ -8,6 +8,7 @@
 // apply - Terminal.app has none, and macOS kills the process on first use.
 //
 //   VoxListener --plugin-root <dir>                 listen on the microphone
+//   VoxListener --plugin-root <dir> --hub           multi-CLI hub: "hey <name>" per named pane
 //   VoxListener --plugin-root <dir> --file <audio>  same, fed from a file (testing)
 //   add --debug to log every transcript
 //   VoxListener --check                             write permission/engine report to check.txt
@@ -19,6 +20,9 @@ import Speech
 
 let stateDir = FileManager.default.homeDirectoryForCurrentUser.path + "/.claude/vox"
 let debug = CommandLine.arguments.contains("--debug")
+let hubMode = CommandLine.arguments.contains("--hub")
+let pidPath = stateDir + (hubMode ? "/hub.pid" : "/listener.pid")
+let namesPath = stateDir + "/names.json"
 
 func log(_ message: String) {
     let f = DateFormatter()
@@ -80,14 +84,71 @@ func sameWord(_ heard: String, _ wanted: String) -> Bool {
     heard == wanted || soundalikes[wanted]?.contains(heard) == true
 }
 
+// Named panes for the hub: names.json maps name -> {kind, id, cwd, ...}
+// (written by voice-name.sh). Returns (name, cwd) sorted by name.
+func readNames() -> [(name: String, cwd: String)] {
+    guard let data = FileManager.default.contents(atPath: namesPath),
+          let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: [String: Any]] else { return [] }
+    return j.map { ($0.key, $0.value["cwd"] as? String ?? "") }.sorted { $0.name < $1.name }
+}
+
+func modified(_ path: String) -> Date? {
+    (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+}
+
+// Menu-bar icon while the hub runs (the Windows hub's tray icon): named
+// CLIs, the log, and quit.
+final class HubMenu: NSObject {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+    override init() {
+        super.init()
+        item.button?.title = "Vox"
+    }
+
+    func rebuild(_ names: [(name: String, cwd: String)]) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let header = menu.addItem(withTitle: "Vox Hub", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(.separator())
+        if names.isEmpty {
+            menu.addItem(withTitle: "  (no named CLIs - run /vox:name <name>)", action: nil, keyEquivalent: "").isEnabled = false
+        }
+        for n in names {
+            let folder = (n.cwd as NSString).lastPathComponent
+            menu.addItem(withTitle: "  \(n.name)  -  \(folder)", action: nil, keyEquivalent: "").isEnabled = false
+        }
+        menu.addItem(.separator())
+        let logItem = menu.addItem(withTitle: "Open log", action: #selector(openLog), keyEquivalent: "")
+        logItem.target = self
+        let quit = menu.addItem(withTitle: "Quit Vox Hub", action: #selector(quitHub), keyEquivalent: "")
+        quit.target = self
+        item.menu = menu
+    }
+
+    @objc func openLog() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: stateDir + "/voice.log"))
+    }
+
+    @objc func quitHub() {
+        log("hub stopped from the menu bar")
+        exit(0)
+    }
+}
+
 final class Listener {
     let cfg = Config.load()
     let sendScript: String
     let recognizer: SFSpeechRecognizer
     var engine = AVAudioEngine()
     private var engineObserver: NSObjectProtocol?
-    let wakePhrases: [[String]]
+    // Wake phrase words, and the named pane it routes to (hub mode only).
+    private var wakePhrases: [(words: [String], name: String?)] = []
     let endPhrases: [[String]]
+    private var namesStamp: Date?
+    private var menu: HubMenu?
+    private var routeName: String?
 
     // The audio thread appends to whichever request is current.
     private let lock = NSLock()
@@ -114,8 +175,31 @@ final class Listener {
     init(pluginRoot: String, recognizer: SFSpeechRecognizer) {
         sendScript = pluginRoot + "/scripts/mac/send.sh"
         self.recognizer = recognizer
-        wakePhrases = cfg.wakeWords.map { $0.split(separator: " ").map { normalize(String($0)) } }
         endPhrases = cfg.endWords.map { $0.split(separator: " ").map { normalize(String($0)) } }
+        if hubMode {
+            menu = HubMenu()
+            loadNames()
+        } else {
+            wakePhrases = cfg.wakeWords.map { (phraseWords($0), nil) }
+        }
+    }
+
+    func phraseWords(_ phrase: String) -> [String] {
+        phrase.split(separator: " ").map { normalize(String($0)) }
+    }
+
+    // Hub: "hey <name>" / "okay <name>" for every named pane (as on Windows).
+    func loadNames() {
+        namesStamp = modified(namesPath)
+        let names = readNames()
+        wakePhrases = names.flatMap { n in ["hey", "okay"].map { (phraseWords("\($0) \(n.name)"), Optional(n.name)) } }
+        menu?.rebuild(names)
+        log(names.isEmpty ? "hub: no named CLIs yet - run /vox:name <name> in each Claude CLI"
+                          : "hub: listening for \(names.map { "hey \($0.name)" }.joined(separator: ", "))")
+    }
+
+    var wakeStrings: [String] {
+        wakePhrases.map { $0.words.joined(separator: " ") }
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
@@ -190,7 +274,7 @@ final class Listener {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = true
         req.addsPunctuation = true
-        req.contextualStrings = cfg.wakeWords
+        req.contextualStrings = wakeStrings
         lock.lock(); request = req; lock.unlock()
         taskStarted = Date()
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
@@ -216,14 +300,14 @@ final class Listener {
         task = nil
     }
 
-    // Index (into the transcript's words) just past the last wake phrase, if any.
-    func wakeEnd(_ words: [String]) -> Int? {
-        var best: Int?
-        for phrase in wakePhrases where !phrase.isEmpty && words.count >= phrase.count {
-            for i in 0...(words.count - phrase.count) {
-                if zip(words[i..<(i + phrase.count)], phrase).allSatisfy(sameWord) {
-                    best = max(best ?? 0, i + phrase.count)
-                }
+    // Index (into the transcript's words) just past the last wake phrase, if
+    // any, and the named pane that phrase routes to.
+    func wakeEnd(_ words: [String]) -> (end: Int, name: String?)? {
+        var best: (end: Int, name: String?)?
+        for phrase in wakePhrases where !phrase.words.isEmpty && words.count >= phrase.words.count {
+            let n = phrase.words.count
+            for i in 0...(words.count - n) where zip(words[i..<(i + n)], phrase.words).allSatisfy(sameWord) {
+                if i + n > (best?.end ?? 0) { best = (i + n, phrase.name) }
             }
         }
         return best
@@ -260,7 +344,9 @@ final class Listener {
         // here still marks where it starts.
         let wake = wakeEnd(w.map { $0.word })
         if wake == nil && !capturing { return }
-        let end = wake ?? 0
+        let end = wake?.end ?? 0
+        // A wake word said mid-command re-routes it (hub: "hey nova" after all).
+        if let wake, hubMode { routeName = wake.name }
 
         if !capturing {
             capturing = true
@@ -269,18 +355,23 @@ final class Listener {
             endWordAt = nil
             lastChange = Date()
             let first = w[max(0, end - 2)].range.location
-            log("wake '\(s.substring(with: NSRange(location: first, length: NSMaxRange(w[end - 1].range) - first)))'")
+            let heard = s.substring(with: NSRange(location: first, length: NSMaxRange(w[end - 1].range) - first))
+            log("wake '\(heard)'" + (routeName.map { " -> \($0)" } ?? ""))
             beep("Tink")
             if cfg.duplex == "full" { hushSpeaker() }
         }
 
         var stop = s.length
         let spoken = w[end...].map { $0.word }
+        var endHit = false
         for phrase in endPhrases where !phrase.isEmpty && spoken.count > phrase.count && Array(spoken.suffix(phrase.count)) == phrase {
             stop = w[w.count - phrase.count].range.location
-            if endWordAt == nil { endWordAt = Date() }
+            endHit = true
             break
         }
+        // End words ("over", "send", "go ahead") are ordinary words too: only
+        // the LAST thing said counts, so more speech after one cancels it.
+        if endHit { endWordAt = endWordAt ?? Date() } else { endWordAt = nil }
         var cmd = ""
         if end < w.count, stop > w[end].range.location {
             let start = w[end].range.location
@@ -370,9 +461,9 @@ final class Listener {
                 capturing = false
                 followUp = false
                 startTask()
-            } else if let e = endWordAt, Date().timeIntervalSince(e) >= 0.6 {
-                // Brief settle so the words just before the end word can be
-                // revised from their partial guesses.
+            } else if let e = endWordAt, Date().timeIntervalSince(e) >= 1.0 {
+                // Settle first: partial results lag, so give "…switch over to main"
+                // time to show the words after "over" (which cancels it).
                 log("end-word - finishing")
                 finish()
             } else if !command.isEmpty && Date().timeIntervalSince(lastChange) >= cfg.silenceGapSec {
@@ -381,6 +472,10 @@ final class Listener {
                 log("command time cap reached")
                 finish()
             }
+        } else if hubMode && modified(namesPath) != namesStamp {
+            // A pane was (re)named: new wake phrases take effect on a fresh task.
+            loadNames()
+            startTask()
         } else if Date().timeIntervalSince(taskStarted) >= 50 {
             // Keep the transcript short and stay clear of per-task time limits.
             startTask()
@@ -391,6 +486,13 @@ final class Listener {
     // follow-up flows like conversation. followUpSec 0 turns this off.
     func startFollowUp() {
         guard cfg.followUpSec > 0 else { return }
+        if hubMode {
+            // Follow up with whichever CLI's reply was spoken last.
+            let last = (try? String(contentsOfFile: stateDir + "/last-spoken-name", encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !last.isEmpty, readNames().contains(where: { $0.name == last }) else { return }
+            routeName = last
+        }
         capturing = true
         followUp = true
         wakeAt = Date()
@@ -398,7 +500,7 @@ final class Listener {
         endWordAt = nil
         lastChange = Date()
         beep("Tink")
-        log("follow-up: listening \(Int(cfg.followUpSec))s without the wake word")
+        log("follow-up: listening \(Int(cfg.followUpSec))s without the wake word" + (routeName.map { " (-> \($0))" } ?? ""))
     }
 
     func finish() {
@@ -415,11 +517,11 @@ final class Listener {
             return
         }
         sending = true
-        let script = sendScript
+        let args = [sendScript, text] + (hubMode ? [routeName ?? ""] : [])
         DispatchQueue.global().async {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/bash")
-            p.arguments = [script, text]
+            p.arguments = args
             var ok = false
             do {
                 try p.run()
@@ -523,7 +625,6 @@ func runCheck() {
 }
 
 func runListener(pluginRoot: String, file: String?) {
-    let pidFile = stateDir + "/listener.pid"
     unlink(stateDir + "/stop.flag")
     requestSpeech { speech in
         requestMic { mic in
@@ -549,11 +650,12 @@ func runListener(pluginRoot: String, file: String?) {
                 exit(2)
             }
             objc_setAssociatedObject(NSApp as Any, "listener", listener, .OBJC_ASSOCIATION_RETAIN)
-            try? "\(getpid())\n".write(toFile: pidFile, atomically: true, encoding: .utf8)
-            atexit { unlink(stateDir + "/listener.pid") }
+            try? "\(getpid())\n".write(toFile: pidPath, atomically: true, encoding: .utf8)
+            atexit { unlink(pidPath) }
             listener.run()
             beep("Tink")
-            log("ready. engine=apple-speech (\(r.locale.identifier), on-device). wake: \(listener.cfg.wakeWords.joined(separator: ", ")), duplex=\(listener.cfg.duplex)")
+            let wake = hubMode ? "hey <name> (hub)" : listener.cfg.wakeWords.joined(separator: ", ")
+            log("ready. engine=apple-speech (\(r.locale.identifier), on-device). wake: \(wake), duplex=\(listener.cfg.duplex)")
         }
     }
 }

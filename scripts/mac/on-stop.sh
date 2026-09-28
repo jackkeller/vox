@@ -39,7 +39,7 @@ if [ "$voice_only" = true ]; then
           | .message.content
           | if type == "string" then . else ([ .[]? | select(.type == "text" and .text) | .text ] | join("\n")) end
           | gsub("^\\s+|\\s+$"; "") | select(length > 0) ] | last // empty' "$transcript")
-    if ! vox_was_voice_cmd "$user_text"; then
+    if ! name=$(vox_was_voice_cmd "$user_text"); then
         vox_log 'skip TTS: last prompt was typed, not voiced' on-stop
         exit 0
     fi
@@ -75,6 +75,22 @@ text=$(printf '%s' "$text" | VOX_CODE="$(vox_cfg speakCodeBlocks)" VOX_MAX="$(vo
         $_ = $cut . " . Full answer is on screen.";
     }')
 [ -n "${text// /}" ] || exit 0
+
+# Hub: queue the reply, announced with the CLI's name, so several CLIs take
+# turns. The name comes from the voiced command; otherwise match this
+# session's folder against the named panes (as the Windows hub does).
+if vox_hub_pid > /dev/null; then
+    if [ -z "$name" ]; then
+        cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)
+        name=$(jq -r --arg c "$cwd" '[to_entries[] | select(.value.cwd == $c) | .key] | first // empty' \
+            "$VOX_STATE/names.json" 2>/dev/null)
+    fi
+    mkdir -p "$VOX_STATE/speak-queue"
+    printf '%s\n%s' "$name" "${name:+$name says: }$text" > "$VOX_STATE/speak-queue/$(perl -MTime::HiRes=time -e 'printf "%.6f", time')-$$.txt"
+    nohup /bin/bash "$VOX_DIR/speak-queue.sh" > /dev/null 2>&1 &
+    vox_log "queued ${#text} chars${name:+ from $name}" on-stop
+    exit 0
+fi
 
 # A new reply supersedes whatever is still being spoken.
 vox_hush > /dev/null

@@ -7,9 +7,6 @@ Vox — Latin for *voice*. Say a wake word, speak your prompt, Claude types it,
 runs it, and answers out loud. 100% native OS speech — no cloud STT, no
 Python, no browser, no extra services.
 
-> **macOS:** single-CLI voice input and spoken replies work (see
-> [macOS](#macos)). The multi-CLI hub is Windows-only for now.
-
 ## Install
 
 Windows or macOS + Claude Code required. On Windows, Vox's hooks run through
@@ -74,13 +71,18 @@ it types into a terminal app, macOS may ask to let *Vox Listener* control it;
 click OK. Other terminals work by bringing the app forward and typing, which
 needs Accessibility access. `/vox:aim` re-targets another terminal (5s grab).
 
+For several Claude sessions, the [Vox Hub](#-multi-cli--the-vox-hub-recommended)
+works the same way as on Windows, with one difference: `/vox:name` identifies
+the pane it's run in directly — no countdown or click needed. While the hub
+runs, a **Vox** item in the menu bar lists the named CLIs.
+
 Spoken replies use the built-in `say`. Code blocks are skipped and markdown
 is stripped. Pick a voice from `/vox:test` and set it in
 `~/.claude/vox/config.json` (see [Config](#config)).
 
 ---
 
-## ⭐ Multi-CLI — the Vox Hub (Windows, recommended)
+## ⭐ Multi-CLI — the Vox Hub (recommended)
 
 Run several Claude Code sessions and drive them all with one microphone. Each
 terminal gets a name; **"hey &lt;name&gt;" invokes that exact terminal**, and
@@ -98,8 +100,9 @@ CLI is **not voice-addressable** — the hub doesn't know it exists for routing.
 Do it once per session, per terminal:
 
 - Run `/vox:name nova`
-- During the 5-second countdown, **click inside that terminal's pane and leave
-  the mouse there** (that click point is how the hub re-focuses it).
+- On Windows, during the 5-second countdown, **click inside that terminal's
+  pane and leave the mouse there** (that click point is how the hub re-focuses
+  it). On macOS there's no countdown — the pane you ran it in is recorded.
 - Repeat with a different name (`atlas`, `sage`, …) in every other terminal.
 
 Then just talk:
@@ -109,8 +112,8 @@ Then just talk:
 
 Replies come back as *"Nova: tests pass."* `/vox:hub stop` shuts it down.
 
-> The hub is the newer layer and still being hardened — Windows Terminal
-> **split panes** in particular. One CLI per separate window is the most
+> The hub is the newer layer and still being hardened — on Windows, Windows
+> Terminal **split panes** in particular. One CLI per separate window is the most
 > robust; tabs/panes work via the click-point targeting above.
 
 ---
@@ -130,8 +133,6 @@ For just one Claude session, skip the hub:
 talking. It sends on your pause. No end-word needed.
 
 ## All commands
-
-On macOS everything except `/vox:hub` and `/vox:name` works so far.
 
 ```
 /vox:hub start|stop|status   # multi-CLI tray hub

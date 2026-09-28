@@ -16,6 +16,7 @@ fi
 if [ "$action" = status ]; then
     if [ "$current" = half ]; then how='(deaf while speaking - speakers)'; else how='(always listening + barge-in - headphones)'; fi
     if p=$(vox_listener_pid); then running="running (pid $p)"; else running=stopped; fi
+    if p=$(vox_hub_pid); then running="$running, hub running (pid $p)"; fi
     echo "Duplex mode  : $current  $how"
     echo "Listener     : $running"
     echo 'Switch with  : /vox:duplex full   (headphones)  |  half   (speakers)'
@@ -37,20 +38,25 @@ else
     msg="Duplex set to 'half' (speakers: deaf while Claude speaks)."
 fi
 
-# Hot-restart the listener so the change takes effect now, keeping the same
-# target (relaunch the app directly - do NOT re-capture the terminal).
-if p=$(vox_listener_pid); then
-    echo 1 > "$VOX_STATE/stop.flag"
-    kill "$p" 2>/dev/null
-    sleep 0.6
-    rm -f "$VOX_STATE/stop.flag" "$VOX_STATE/listener.pid"
-    open -g -n "$VOX_STATE/VoxListener.app" --args --plugin-root "$(cd "$VOX_DIR/../.." && pwd)"
-    for _ in $(seq 1 10); do vox_listener_pid > /dev/null && break; sleep 0.5; done
-    if np=$(vox_listener_pid); then
-        echo "$msg Listener hot-restarted (pid $np), same target. Ready."
-    else
-        echo "$msg Listener restart FAILED - check $VOX_STATE/voice.log. Try /vox:listen."
-    fi
+# Hot-restart whichever is running (listener or hub) so the change takes
+# effect now, keeping the same target(s) - relaunch the app directly, do NOT
+# re-capture the terminal.
+if p=$(vox_hub_pid); then
+    what=Hub; pidf=hub.pid; extra=--hub
+elif p=$(vox_listener_pid); then
+    what=Listener; pidf=listener.pid; extra=
 else
     echo "$msg Listener isn't running - it'll use this mode next /vox:listen."
+    exit 0
+fi
+echo 1 > "$VOX_STATE/stop.flag"
+kill "$p" 2>/dev/null
+sleep 0.6
+rm -f "$VOX_STATE/stop.flag" "$VOX_STATE/$pidf"
+open -g -n "$VOX_STATE/VoxListener.app" --args --plugin-root "$(cd "$VOX_DIR/../.." && pwd)" $extra
+for _ in $(seq 1 10); do vox_pid_alive "$VOX_STATE/$pidf" && break; sleep 0.5; done
+if vox_pid_alive "$VOX_STATE/$pidf"; then
+    echo "$msg $what hot-restarted (pid $(tr -dc '0-9' < "$VOX_STATE/$pidf")), same target. Ready."
+else
+    echo "$msg $what restart FAILED - check $VOX_STATE/voice.log. Try /vox:listen or /vox:hub start."
 fi

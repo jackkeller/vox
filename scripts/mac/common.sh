@@ -56,9 +56,11 @@ vox_pid_alive() {
     [ -n "$p" ] && kill -0 "$p" 2>/dev/null
 }
 
-# Stop any in-progress speech. Prints the pid it killed, if any.
+# Stop any in-progress speech (and, in hub mode, drop queued replies).
+# Prints the pid it killed, if any.
 vox_hush() {
     local f="$VOX_STATE/speaker.pid" p
+    rm -f "$VOX_STATE"/speak-queue/*
     if vox_pid_alive "$f"; then
         p=$(tr -dc '0-9' < "$f")
         kill "$p" 2>/dev/null
@@ -97,28 +99,52 @@ vox_listener_pid() {
     vox_pid_alive "$VOX_STATE/listener.pid" && tr -dc '0-9' < "$VOX_STATE/listener.pid"
 }
 
+vox_hub_pid() {
+    vox_pid_alive "$VOX_STATE/hub.pid" && tr -dc '0-9' < "$VOX_STATE/hub.pid"
+}
+
 # --- Voiced-command ring: lets the Stop hook tell a VOICED prompt from a
 #     TYPED one. send.sh appends every command it types; on-stop checks
 #     whether the prompt that triggered a reply came through here.
-#     Same file format as common.ps1 (one {"t":epoch,"x":text} per line). ---
+#     Same file format as common.ps1 (one {"t":epoch,"x":text} per line),
+#     plus "n": the hub name it was sent to, so the reply can be announced. ---
 vox_norm_text() {
     printf '%s' "$1" | perl -CSD -0777 -pe '$_ = lc; s/\s+/ /g; s/^[.!?,;:"\x27` ]+|[.!?,;:"\x27` ]+$//g'
+}
+
+# Several CLIs' hooks can rewrite the ring at the same moment (hub mode);
+# serialize read-modify-write. A lock older than ~2s is from a dead process.
+vox_ring_lock() {
+    local l="$VOX_STATE/voice-cmds.lock" i=0
+    until mkdir "$l" 2> /dev/null; do
+        i=$((i + 1))
+        if [ $i -ge 40 ]; then rm -rf "$l"; mkdir "$l" 2> /dev/null; return; fi
+        sleep 0.05
+    done
+}
+
+vox_ring_unlock() {
+    rmdir "$VOX_STATE/voice-cmds.lock" 2> /dev/null
 }
 
 vox_add_voice_cmd() {
     local n f="$VOX_STATE/voice-cmds.jsonl"
     n=$(vox_norm_text "$1")
     [ -n "$n" ] || return
-    jq -cn --arg x "$n" '{t: now | floor, x: $x}' >> "$f"
-    tail -n "$(vox_cfg voiceCmdRing)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    vox_ring_lock
+    jq -cn --arg x "$n" --arg name "${2:-}" '{t: now | floor, x: $x} + (if $name == "" then {} else {n: $name} end)' >> "$f"
+    tail -n "$(vox_cfg voiceCmdRing)" "$f" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
+    vox_ring_unlock
 }
 
+# Succeeds if the text was a voiced command; prints the hub name it went to
+# (empty when sent by the single-CLI listener).
 vox_was_voice_cmd() {
     local n f="$VOX_STATE/voice-cmds.jsonl"
     n=$(vox_norm_text "$1")
     [ -n "$n" ] && [ -f "$f" ] || return 1
-    jq -Rne --arg x "$n" --argjson ttl "$(vox_cfg voiceCmdTtlSec)" '
-        [ inputs | fromjson? | select(.x == $x and ($ttl <= 0 or (now - .t) <= $ttl)) ] | length > 0' "$f" > /dev/null
+    jq -Rnre --arg x "$n" --argjson ttl "$(vox_cfg voiceCmdTtlSec)" '
+        [ inputs | fromjson? | select(.x == $x and ($ttl <= 0 or (now - .t) <= $ttl)) ] | first | select(.) | .n // ""' "$f"
 }
 
 # Consume one voiced command: drop the FIRST matching entry so its reply is
@@ -127,11 +153,13 @@ vox_remove_voice_cmd() {
     local n f="$VOX_STATE/voice-cmds.jsonl"
     n=$(vox_norm_text "$1")
     [ -n "$n" ] && [ -f "$f" ] || return
+    vox_ring_lock
     jq -Rnc --arg x "$n" '
         reduce (inputs | fromjson?) as $o ({done: false, keep: []};
             if (.done | not) and $o.x == $x then .done = true else .keep += [$o] end)
-        | .keep[]' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+        | .keep[]' "$f" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"
     [ -s "$f" ] || rm -f "$f"
+    vox_ring_unlock
 }
 
 # --- Target terminal: where send.sh types. Written to target.json as

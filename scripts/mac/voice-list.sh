@@ -1,6 +1,6 @@
 # voice-list.sh - print every Vox command available on macOS.
 
-cat <<'EOF'
+cat <<'LIST'
 Vox - voice control for Claude Code (macOS). Commands:
 
   SINGLE CLI
@@ -8,6 +8,12 @@ Vox - voice control for Claude Code (macOS). Commands:
   /vox:speak on|off  Claude reads replies aloud
   /vox:hush          stop talking now, keep listening
   /vox:stop          stop the listener + silence speech
+
+  MULTI-CLI (hub)
+  /vox:hub start     start the hub ("Vox" in the menu bar; one mic for many CLIs)
+  /vox:hub status    list named CLIs
+  /vox:hub stop      stop the hub
+  /vox:name <name>   name THIS CLI -> say "hey <name>" to talk to it
 
   TUNING
   /vox:duplex full   headphones: always listen + barge-in
@@ -18,6 +24,6 @@ Vox - voice control for Claude Code (macOS). Commands:
   /vox:test          speak a test sentence, list voices
   /vox:list          this list
 
-Flow: say "hey claude" -> chime -> speak -> stop talking. It sends on your
-pause. Cut a long reply with /vox:hush. (The multi-CLI hub is not on macOS yet.)
-EOF
+Flow: say "hey <name>" (or "hey claude" single-CLI) -> chime -> speak ->
+stop talking. It sends on your pause. Cut a long reply with /vox:hush.
+LIST
