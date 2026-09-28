@@ -62,7 +62,10 @@ Then, in the terminal running Claude Code:
 ```
 
 **Flow:** say *"hey claude"* → chime → speak → just stop talking. It sends on
-your pause (or say an end word like "send it").
+your pause (or say an end word like "send it"). After Claude reads its reply,
+you get a chime and ~8 seconds to follow up **without** the wake word — keep
+going like a conversation, or stay quiet and it goes back to waiting for
+"hey claude". Set `followUpSec` to 0 to turn this off.
 
 Recognition runs on-device through Apple's Speech framework. Vox types into
 the pane you ran `/vox:listen` from — **Ghostty** (1.3+), **iTerm2**,
@@ -156,8 +159,8 @@ Windows: `%USERPROFILE%\.claude\windows-voice\config.json` (created on first run
 macOS: `~/.claude/vox/config.json` (create it to override defaults):
 `voice` (a name from `/vox:test`), `rate` (-10..10, same scale as Windows),
 `volume`, `maxChars`, `wakeWords`, `endWords`, `duplex`, `ttsTailMs`,
-`silenceGapSec`, `maxCommandSec`, `commandWaitSec`, `speakVoiceOnly`. Logs and
-state live in that same folder.
+`silenceGapSec`, `maxCommandSec`, `commandWaitSec`, `followUpSec`,
+`speakVoiceOnly`. Logs and state live in that same folder.
 
 ## Known limits
 

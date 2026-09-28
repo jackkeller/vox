@@ -20,6 +20,7 @@ VOX_DEFAULTS='{
   "silenceGapSec": 2.5,
   "maxCommandSec": 30,
   "commandWaitSec": 10,
+  "followUpSec": 8,
   "speakVoiceOnly": true,
   "voiceCmdTtlSec": 0,
   "voiceCmdRing": 50

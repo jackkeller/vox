@@ -10,7 +10,11 @@ if [ "$action" = toggle ]; then
 fi
 
 case "$action" in
-    on)     echo 1 > "$flag"; echo 'TTS readback: ON. Claude will speak each reply aloud (macOS say). Run a quick test with /vox:test.' ;;
+    on)
+        echo 1 > "$flag"
+        if [ "$(vox_cfg speakVoiceOnly)" = true ]; then which='replies to your voiced prompts'; else which='each reply'; fi
+        echo "TTS readback: ON. Claude will speak $which aloud (macOS say). Run a quick test with /vox:test."
+        ;;
     off)    rm -f "$flag"; echo 'TTS readback: OFF.' ;;
     status) if [ -f "$flag" ]; then echo 'TTS readback is currently ON.'; else echo 'TTS readback is currently OFF.'; fi ;;
     *)      echo "Unknown action '$action'. Use: on | off | toggle | status." ;;

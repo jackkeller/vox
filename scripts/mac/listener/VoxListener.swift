@@ -46,6 +46,7 @@ struct Config {
     var silenceGapSec = 2.5
     var maxCommandSec = 30.0
     var commandWaitSec = 10.0
+    var followUpSec = 8.0
 
     static func load() -> Config {
         var c = Config()
@@ -58,6 +59,7 @@ struct Config {
         if let v = j["silenceGapSec"] as? Double { c.silenceGapSec = v }
         if let v = j["maxCommandSec"] as? Double { c.maxCommandSec = v }
         if let v = j["commandWaitSec"] as? Double { c.commandWaitSec = v }
+        if let v = j["followUpSec"] as? Double { c.followUpSec = v }
         return c
     }
 }
@@ -99,6 +101,8 @@ final class Listener {
     private var endWordAt: Date?
     private var sending = false
     private var paused = false
+    private var followUp = false
+    private var replySpeaking = false
     private var resumeAt: Date?
 
     init(pluginRoot: String, recognizer: SFSpeechRecognizer) {
@@ -191,7 +195,11 @@ final class Listener {
         let s = result.bestTranscription.formattedString as NSString
         if debug { log("heard: \(s)") }
         let w = words(s)
-        guard let end = wakeEnd(w.map { $0.word }) else { return }
+        // In a follow-up window the whole utterance is the command; a wake word
+        // said anyway still marks where it starts.
+        let wake = wakeEnd(w.map { $0.word })
+        if wake == nil && !followUp { return }
+        let end = wake ?? 0
 
         if !capturing {
             capturing = true
@@ -237,6 +245,7 @@ final class Listener {
                 if !paused {
                     paused = true
                     capturing = false
+                    followUp = false
                     stopTask()
                     log("TTS speaking - listener paused")
                 }
@@ -250,17 +259,35 @@ final class Listener {
                 resumeAt = nil
                 startTask()
                 log("TTS ended - listening resumed")
+                startFollowUp()
                 return
+            }
+        } else {
+            // Full duplex keeps listening through the reply; still open a
+            // follow-up window once it ends.
+            if speakerAlive() {
+                replySpeaking = true
+            } else if replySpeaking {
+                replySpeaking = false
+                if !capturing && !sending {
+                    startTask()
+                    startFollowUp()
+                }
             }
         }
         if sending { return }
 
         if capturing {
             let elapsed = Date().timeIntervalSince(wakeAt)
-            if command.isEmpty && elapsed >= cfg.commandWaitSec {
-                log("no speech in \(Int(cfg.commandWaitSec))s - reset, ready for next wake")
+            if command.isEmpty && elapsed >= (followUp ? cfg.followUpSec : cfg.commandWaitSec) {
+                if followUp {
+                    log("follow-up window closed - say the wake word to continue")
+                } else {
+                    log("no speech in \(Int(cfg.commandWaitSec))s - reset, ready for next wake")
+                    beep("Funk")
+                }
                 capturing = false
-                beep("Funk")
+                followUp = false
                 startTask()
             } else if let e = endWordAt, Date().timeIntervalSince(e) >= 0.6 {
                 // Brief settle so the words just before the end word can be
@@ -279,8 +306,23 @@ final class Listener {
         }
     }
 
+    // After a spoken reply, listen briefly without the wake word so a
+    // follow-up flows like conversation. followUpSec 0 turns this off.
+    func startFollowUp() {
+        guard cfg.followUpSec > 0 else { return }
+        capturing = true
+        followUp = true
+        wakeAt = Date()
+        command = ""
+        endWordAt = nil
+        lastChange = Date()
+        beep("Tink")
+        log("follow-up: listening \(Int(cfg.followUpSec))s without the wake word")
+    }
+
     func finish() {
         capturing = false
+        followUp = false
         endWordAt = nil
         let text = command.trimmingCharacters(in: .whitespacesAndNewlines)
         command = ""
