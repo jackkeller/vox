@@ -52,6 +52,10 @@ struct Config {
     var maxCommandSec = 30.0
     var commandWaitSec = 10.0
     var followUpSec = 8.0
+    // Words dictation should prefer, e.g. "main" over "Maine", "rebase" over "re-base".
+    var hintWords = ["main", "rebase", "merge", "PR", "pull request", "commit", "branch"]
+    // Whole words to rewrite before typing, for mishearings hints don't fix.
+    var corrections = ["Maine": "main"]
 
     static func load() -> Config {
         var c = Config()
@@ -65,7 +69,23 @@ struct Config {
         if let v = j["maxCommandSec"] as? Double { c.maxCommandSec = v }
         if let v = j["commandWaitSec"] as? Double { c.commandWaitSec = v }
         if let v = j["followUpSec"] as? Double { c.followUpSec = v }
+        if let v = j["hintWords"] as? [String] { c.hintWords = v }
+        if let v = j["corrections"] as? [String: String] { c.corrections = v }
         return c
+    }
+}
+
+extension String {
+    // Whole-word, case-insensitive replacements ("Maine" -> "main").
+    func corrected(_ map: [String: String]) -> String {
+        var s = self
+        for (heard, want) in map {
+            let pattern = "\\b" + NSRegularExpression.escapedPattern(for: heard) + "\\b"
+            guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+            s = re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s),
+                                            withTemplate: NSRegularExpression.escapedTemplate(for: want))
+        }
+        return s
     }
 }
 
@@ -274,7 +294,7 @@ final class Listener {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = true
         req.addsPunctuation = true
-        req.contextualStrings = wakeStrings
+        req.contextualStrings = wakeStrings + cfg.hintWords
         lock.lock(); request = req; lock.unlock()
         taskStarted = Date()
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
@@ -507,7 +527,7 @@ final class Listener {
         capturing = false
         followUp = false
         endWordAt = nil
-        let text = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = command.trimmingCharacters(in: .whitespacesAndNewlines).corrected(cfg.corrections)
         command = ""
         stopTask()
         if text.isEmpty {

@@ -161,7 +161,9 @@ macOS: `~/.claude/vox/config.json` (create it to override defaults):
 `voice` (a name from `/vox:test`), `rate` (-10..10, same scale as Windows),
 `volume`, `maxChars`, `wakeWords`, `endWords`, `duplex`, `ttsTailMs`,
 `silenceGapSec`, `maxCommandSec`, `commandWaitSec`, `followUpSec`,
-`speakVoiceOnly`. Logs and state live in that same folder.
+`speakVoiceOnly`, `hintWords` (words dictation should prefer, e.g. "rebase")
+and `corrections` (whole words rewritten before typing, e.g.
+`{"Maine": "main"}`). Logs and state live in that same folder.
 
 ## Known limits
 
